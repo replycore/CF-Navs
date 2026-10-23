@@ -56,7 +56,6 @@ jobs:
           UP="upstream/$UPSTREAM_BRANCH"
 
           if git merge-base --is-ancestor "HEAD" "$UP"; then
-            # Upstream is ahead (or equal): plain fast-forward.
             if git diff --quiet HEAD "$UP"; then
               echo "Already synchronized."
             else
@@ -71,12 +70,30 @@ jobs:
             exit 0
           fi
 
-          # Diverged: replay only the fork-local commits on top of upstream,
-          # then update the branch. Fork-only files (e.g. this workflow) do not conflict.
-          echo "Branches have diverged; rebasing fork-local commits onto $UP"
-          if ! git rebase "$UP"; then
-            git rebase --abort || true
-            echo "::error::Rebase conflict: fork-local commits cannot be replayed onto $UP. Resolve manually."
-            exit 1
+          # Diverged. Keep a safety copy of the current branch, then mirror upstream
+          # and re-apply the fork-only sync workflow so the schedule keeps working.
+          echo "Branches have diverged; mirroring $UP and keeping fork-local workflow"
+          git push --force origin "HEAD:refs/heads/backup/$TARGET_BRANCH" || true
+
+          KEEP=/tmp/keep-sync-upstream.yml
+          if git cat-file -e "HEAD:.github/workflows/sync-upstream.yml" 2>/dev/null; then
+            git show "HEAD:.github/workflows/sync-upstream.yml" > "$KEEP"
           fi
-          git push --force-with-lease origin "HEAD:$TARGET_BRANCH"
+
+          git reset --hard "$UP"
+          git clean -fdx >/dev/null
+
+          if [ -s "$KEEP" ]; then
+            mkdir -p .github/workflows
+            cp "$KEEP" .github/workflows/sync-upstream.yml
+            git add -A
+            if ! git diff --cached --quiet; then
+              git commit -m "ci: keep fork sync workflow (auto)"
+            fi
+          fi
+
+          if [ -n "$(git log --oneline "$UP"..HEAD)" ]; then
+            git push --force-with-lease origin "HEAD:$TARGET_BRANCH"
+          else
+            echo "Already synchronized after applying fork files."
+          fi
