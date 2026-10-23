@@ -6,12 +6,12 @@ on:
       target_branch:
         description: Branch in this fork to update
         required: true
-        default: develop
+        default: main
         type: string
       upstream_branch:
         description: Branch to read from the upstream repository
         required: true
-        default: develop
+        default: main
         type: string
   schedule:
     - cron: '17 3 * * *'
@@ -20,7 +20,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: sync-upstream-${{ github.repository }}-${{ inputs.target_branch || 'develop' }}
+  group: sync-upstream-${{ github.repository }}-${{ inputs.target_branch || 'main' }}
   cancel-in-progress: false
 
 jobs:
@@ -30,19 +30,19 @@ jobs:
       - name: Checkout target branch
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.target_branch || 'develop' }}
+          ref: ${{ inputs.target_branch || 'main' }}
           fetch-depth: 0
 
       - name: Configure upstream remote
         run: git remote add upstream https://github.com/lbjxr/CF-Navs.git
 
       - name: Fetch upstream
-        run: git fetch --prune upstream "${{ inputs.upstream_branch || 'develop' }}"
+        run: git fetch --prune upstream "${{ inputs.upstream_branch || 'main' }}"
 
       - name: Fast-forward target branch
         env:
-          TARGET_BRANCH: ${{ inputs.target_branch || 'develop' }}
-          UPSTREAM_BRANCH: ${{ inputs.upstream_branch || 'develop' }}
+          TARGET_BRANCH: ${{ inputs.target_branch || 'main' }}
+          UPSTREAM_BRANCH: ${{ inputs.upstream_branch || 'main' }}
         run: |
           set -euo pipefail
           git checkout "$TARGET_BRANCH"
