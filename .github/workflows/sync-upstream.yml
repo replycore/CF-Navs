@@ -33,29 +33,50 @@ jobs:
           ref: ${{ inputs.target_branch || 'main' }}
           fetch-depth: 0
 
-      - name: Configure upstream remote
-        run: git remote add upstream https://github.com/lbjxr/CF-Navs.git
+      - name: Configure identity and upstream remote
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git remote get-url upstream >/dev/null 2>&1; then
+            git remote set-url upstream https://github.com/lbjxr/CF-Navs.git
+          else
+            git remote add upstream https://github.com/lbjxr/CF-Navs.git
+          fi
 
       - name: Fetch upstream
         run: git fetch --prune upstream "${{ inputs.upstream_branch || 'main' }}"
 
-      - name: Fast-forward target branch
+      - name: Sync target branch
         env:
           TARGET_BRANCH: ${{ inputs.target_branch || 'main' }}
           UPSTREAM_BRANCH: ${{ inputs.upstream_branch || 'main' }}
         run: |
           set -euo pipefail
           git checkout "$TARGET_BRANCH"
-          if git merge-base --is-ancestor "HEAD" "upstream/$UPSTREAM_BRANCH"; then
-            if git diff --quiet HEAD "upstream/$UPSTREAM_BRANCH"; then
+          UP="upstream/$UPSTREAM_BRANCH"
+
+          if git merge-base --is-ancestor "HEAD" "$UP"; then
+            # Upstream is ahead (or equal): plain fast-forward.
+            if git diff --quiet HEAD "$UP"; then
               echo "Already synchronized."
             else
-              git merge --ff-only "upstream/$UPSTREAM_BRANCH"
+              git merge --ff-only "$UP"
               git push origin "HEAD:$TARGET_BRANCH"
             fi
-          elif git merge-base --is-ancestor "upstream/$UPSTREAM_BRANCH" HEAD; then
+            exit 0
+          fi
+
+          if git merge-base --is-ancestor "$UP" HEAD; then
             echo "Target branch is ahead of upstream; no changes made."
-          else
-            echo "Branches have diverged; refusing to merge or force-push automatically." >&2
+            exit 0
+          fi
+
+          # Diverged: replay only the fork-local commits on top of upstream,
+          # then update the branch. Fork-only files (e.g. this workflow) do not conflict.
+          echo "Branches have diverged; rebasing fork-local commits onto $UP"
+          if ! git rebase "$UP"; then
+            git rebase --abort || true
+            echo "::error::Rebase conflict: fork-local commits cannot be replayed onto $UP. Resolve manually."
             exit 1
           fi
+          git push --force-with-lease origin "HEAD:$TARGET_BRANCH"
