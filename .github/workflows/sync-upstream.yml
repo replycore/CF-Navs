@@ -1,0 +1,102 @@
+name: Sync upstream branch
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_branch:
+        description: Branch in this fork to update
+        required: true
+        default: main
+        type: string
+      upstream_branch:
+        description: Branch to read from the upstream repository
+        required: true
+        default: main
+        type: string
+  schedule:
+    - cron: '17 3 * * *'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-upstream-${{ github.repository }}-${{ inputs.target_branch || 'main' }}
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout target branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.target_branch || 'main' }}
+          fetch-depth: 0
+          # GITHUB_TOKEN cannot push commits touching .github/workflows/*.
+          # SYNC_TOKEN (a PAT with the `workflow` scope) is used when configured.
+          token: ${{ secrets.SYNC_TOKEN || github.token }}
+
+      - name: Configure identity and upstream remote
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git remote get-url upstream >/dev/null 2>&1; then
+            git remote set-url upstream https://github.com/lbjxr/CF-Navs.git
+          else
+            git remote add upstream https://github.com/lbjxr/CF-Navs.git
+          fi
+
+      - name: Fetch upstream
+        run: git fetch --prune upstream "${{ inputs.upstream_branch || 'main' }}"
+
+      - name: Sync target branch
+        env:
+          TARGET_BRANCH: ${{ inputs.target_branch || 'main' }}
+          UPSTREAM_BRANCH: ${{ inputs.upstream_branch || 'main' }}
+        run: |
+          set -euo pipefail
+          git checkout "$TARGET_BRANCH"
+          UP="upstream/$UPSTREAM_BRANCH"
+
+          if git merge-base --is-ancestor "HEAD" "$UP"; then
+            if git diff --quiet HEAD "$UP"; then
+              echo "Already synchronized."
+            else
+              git merge --ff-only "$UP"
+              git push origin "HEAD:$TARGET_BRANCH"
+            fi
+            exit 0
+          fi
+
+          if git merge-base --is-ancestor "$UP" HEAD; then
+            echo "Target branch is ahead of upstream; no changes made."
+            exit 0
+          fi
+
+          # Diverged: mirror upstream, then re-apply the fork-only sync workflow.
+          # A backup branch keeps any custom commits that would otherwise be dropped.
+          echo "Branches have diverged; mirroring $UP and re-applying fork-local workflow"
+          git push --force origin "HEAD:refs/heads/backup/$TARGET_BRANCH" || true
+
+          KEEP=/tmp/keep-sync-upstream.yml
+          if git cat-file -e "HEAD:.github/workflows/sync-upstream.yml" 2>/dev/null; then
+            git show "HEAD:.github/workflows/sync-upstream.yml" > "$KEEP"
+          fi
+
+          git reset --hard "$UP"
+          git clean -fdx >/dev/null
+
+          if [ -s "$KEEP" ]; then
+            mkdir -p .github/workflows
+            cp "$KEEP" .github/workflows/sync-upstream.yml
+            git add -A
+            if ! git diff --cached --quiet; then
+              git commit -m "ci: keep fork sync workflow (auto)"
+            fi
+          fi
+
+          if [ -n "$(git log --oneline "$UP"..HEAD)" ]; then
+            git push --force-with-lease origin "HEAD:$TARGET_BRANCH"
+          else
+            echo "Already synchronized after applying fork files."
+          fi
